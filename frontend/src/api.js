@@ -34,6 +34,13 @@ export const api = {
     if (codeIds === null) return request(`/documents/${id}/speakers`)
     return request(`/documents/${id}/speakers?codes=${codeIds.join(',')}`)
   },
+  // 跨文档编码分布对比；codeIds=null 表示全部编码，docIds 仅在显式筛选时传入
+  getCodingDistribution: (codeIds = null, docIds = null) => {
+    const params = []
+    if (codeIds !== null) params.push(`codes=${codeIds.join(',')}`)
+    if (docIds !== null) params.push(`documents=${docIds.join(',')}`)
+    return request(`/coding-distribution${params.length ? `?${params.join('&')}` : ''}`)
+  },
 
   listCodes: () => request('/codes'),
   createCode: (name, color) =>

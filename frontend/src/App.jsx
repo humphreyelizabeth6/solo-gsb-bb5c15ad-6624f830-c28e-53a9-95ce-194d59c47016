@@ -6,6 +6,7 @@ import ConflictDialog from './components/ConflictDialog'
 import Sidebar from './components/Sidebar'
 import CooccurrenceView from './components/CooccurrenceView'
 import SpeakerView from './components/SpeakerView'
+import DistributionView from './components/DistributionView'
 import SearchBatchPanel from './components/SearchBatchPanel'
 
 export default function App() {
@@ -21,13 +22,16 @@ export default function App() {
   const [error, setError] = useState(null)
   const [showNewDoc, setShowNewDoc] = useState(false)
   const [newDoc, setNewDoc] = useState({ title: '', content: '' })
-  const [view, setView] = useState('text') // text | cooccurrence | speakers
+  const [view, setView] = useState('text') // text | cooccurrence | speakers | distribution
   const [coocStats, setCoocStats] = useState(null)
   const [coocLoading, setCoocLoading] = useState(false)
   const [coocError, setCoocError] = useState(null)
   const [speakerStats, setSpeakerStats] = useState(null)
   const [speakerLoading, setSpeakerLoading] = useState(false)
   const [speakerError, setSpeakerError] = useState(null)
+  const [distStats, setDistStats] = useState(null)
+  const [distLoading, setDistLoading] = useState(false)
+  const [distError, setDistError] = useState(null)
   const [pendingLocate, setPendingLocate] = useState(null)
 
   const showError = useCallback((e) => {
@@ -71,7 +75,6 @@ export default function App() {
     if (docId != null) {
       setEditing(null)
       setSelection(null)
-      setPendingLocate(null)
       loadDocument(docId)
     }
   }, [docId, loadDocument])
@@ -134,6 +137,39 @@ export default function App() {
   useEffect(() => {
     loadSpeakers()
   }, [loadSpeakers])
+
+  // ---------- 跨文档编码分布对比（随编码筛选 / 文档 / 编码本变化刷新） ----------
+
+  const loadDistribution = useCallback(async () => {
+    // 全部编码被取消勾选：直接给空结果，不请求后端
+    if (filteredCodeIds && filteredCodeIds.length === 0) {
+      setDistStats({
+        codes: [],
+        documents: [],
+        missing_codes: [],
+        missing_documents: [],
+        empty_document_ids: [],
+      })
+      setDistError(null)
+      setDistLoading(false)
+      return
+    }
+    setDistLoading(true)
+    setDistError(null)
+    try {
+      setDistStats(await api.getCodingDistribution(filteredCodeIds))
+    } catch (e) {
+      setDistStats(null)
+      setDistError(e.message || String(e))
+    } finally {
+      setDistLoading(false)
+    }
+    // docs / codebook / docData 变化（新建文档、编码增删、标注增改删后 refresh）也要重新统计
+  }, [filteredCodeIds, docs, codebook, docData])
+
+  useEffect(() => {
+    loadDistribution()
+  }, [loadDistribution])
 
   // ---------- 编码创建 / 编辑（含冲突检测） ----------
 
@@ -247,18 +283,26 @@ export default function App() {
     setTimeout(() => setFlashRange(null), 1800)
   }
 
-  // 共现矩阵 / 说话人分析片段 → 切回正文并定位高亮
+  // 共现矩阵 / 说话人分析片段 → 切回正文并定位高亮（当前文档）
   function handleLocateSegment(seg) {
     setView('text')
-    setPendingLocate({ start: seg.start, end: seg.end })
+    setPendingLocate({ documentId: docId, start: seg.start, end: seg.end })
   }
 
-  // 正文渲染完成后处理来自统计视图的待定位片段
+  // 跨文档分布对比单元格 → 切换到目标文档正文并定位首个对应片段
+  function handleLocateCell({ documentId, segment }) {
+    setView('text')
+    setPendingLocate({ documentId, start: segment.start, end: segment.end })
+    if (documentId !== docId) setDocId(documentId)
+  }
+
+  // 正文渲染完成且目标文档数据就绪后处理来自统计视图的待定位片段
   useEffect(() => {
-    if (view !== 'text' || !pendingLocate) return
-    const range = pendingLocate
+    if (view !== 'text' || !pendingLocate || !docData) return
+    if (pendingLocate.documentId !== docData.document.id) return
+    const range = { start: pendingLocate.start, end: pendingLocate.end }
     setFlashRange(range)
-    // 等视图切换后的 DOM 渲染完成再滚动
+    // 等视图切换（或跨文档数据加载）后的 DOM 渲染完成再滚动
     const t = setTimeout(() => scrollToRange(range), 60)
     const clear = setTimeout(() => {
       setFlashRange(null)
@@ -268,7 +312,7 @@ export default function App() {
       clearTimeout(t)
       clearTimeout(clear)
     }
-  }, [view, pendingLocate])
+  }, [view, pendingLocate, docData])
 
   function toggleFilter(id) {
     setFilters((cur) => {
@@ -395,6 +439,14 @@ export default function App() {
             >
               说话人分析
             </button>
+            <button
+              role="tab"
+              aria-selected={view === 'distribution'}
+              className={view === 'distribution' ? 'active' : ''}
+              onClick={() => setView('distribution')}
+            >
+              跨文档对比
+            </button>
           </div>
           {view === 'text' ? (
             <TextView
@@ -414,12 +466,19 @@ export default function App() {
               error={coocError}
               onLocateSegment={handleLocateSegment}
             />
-          ) : (
+          ) : view === 'speakers' ? (
             <SpeakerView
               stats={speakerStats}
               loading={speakerLoading}
               error={speakerError}
               onLocateSegment={handleLocateSegment}
+            />
+          ) : (
+            <DistributionView
+              stats={distStats}
+              loading={distLoading}
+              error={distError}
+              onLocateCell={handleLocateCell}
             />
           )}
         </section>

@@ -20,6 +20,7 @@ from .conflicts import (
 )
 from .cooccurrence import build_code_intervals, intersect_intervals
 from .db import get_db, init_db, list_codings, next_color
+from .distribution import compute_distribution
 from .speakers import compute_speaker_stats
 
 Resolution = Literal["keep", "merge", "split"]
@@ -601,4 +602,105 @@ def speaker_analysis(
         "document_length": len(content),
         "codes": [all_codes[cid] for cid in member_ids],
         "speakers": compute_speaker_stats(content, codings, member_ids),
+    }
+
+
+# ---------- 跨文档编码分布对比 ----------
+
+def parse_id_list(raw: str | None) -> tuple[list[int], list[str]]:
+    """解析逗号分隔的 id 列表，返回 (去重排序后的整数 id, 无法解析的原值)。
+
+    None（缺省）返回空列表，表示不加筛选；空串（?codes=）同样表示空集。
+    """
+    if raw is None:
+        return [], []
+    ids: set[int] = set()
+    invalid: list[str] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            ids.add(int(token))
+        except ValueError:
+            invalid.append(token)
+    return sorted(ids), invalid
+
+
+@app.get("/api/coding-distribution")
+def coding_distribution(
+    codes: str | None = Query(default=None),
+    documents: str | None = Query(default=None),
+) -> dict:
+    """跨文档编码分布对比：在单一快照中汇总全部文档的各编码分布。
+
+    查询参数（均为逗号分隔的 id）：
+      - codes：参与对比的编码 id；缺省为编码本全部编码，空串表示不选编码；
+      - documents：限定参与对比的文档 id；缺省为全部文档，空串表示不选文档。
+
+    无法解析的 id 返回 422；不存在的 id 不报错，而是在 missing_codes /
+    missing_documents 中回传，由前端给出提示。计算全程只读，不修改任何
+    标注；没有任何标注的文档在 empty_document_ids 中列出。
+    """
+    code_ids, bad_codes = parse_id_list(codes)
+    doc_ids, bad_docs = parse_id_list(documents)
+    if bad_codes or bad_docs:
+        raise HTTPException(
+            status_code=422,
+            detail="参数格式错误：codes 与 documents 应为逗号分隔的数字 id"
+            + (f"；非法编码 id: {bad_codes}" if bad_codes else "")
+            + (f"；非法文档 id: {bad_docs}" if bad_docs else ""),
+        )
+
+    # 显式开启事务，确保所有读操作落在同一快照（deferred 事务在首次写操作
+    # 时才加锁，先执行 BEGIN 可让后续 SELECT 共享同一快照）。
+    with get_db() as conn:
+        conn.execute("BEGIN")
+        all_codes = {
+            r["id"]: {"id": r["id"], "name": r["name"], "color": r["color"]}
+            for r in conn.execute("SELECT id, name, color FROM codes ORDER BY id")
+        }
+        doc_rows = conn.execute(
+            "SELECT id, title, content FROM documents ORDER BY id"
+        ).fetchall()
+        coding_rows = conn.execute(
+            """
+            SELECT cg.document_id, cg.code_id, cg.start, cg."end"
+            FROM codings cg
+            ORDER BY cg.document_id, cg.start, cg."end"
+            """
+        ).fetchall()
+        conn.execute("COMMIT")
+
+    all_docs = [dict(r) for r in doc_rows]
+    docs_by_id = {d["id"]: d for d in all_docs}
+    # 缺省（None）= 全部；空集（?documents=）= 显式不选任何文档
+    missing_documents = [did for did in doc_ids if did not in docs_by_id]
+    member_docs = (
+        all_docs if documents is None else [d for d in all_docs if d["id"] in set(doc_ids)]
+    )
+
+    # 缺省（None）= 全部编码；空集（?codes=）= 不统计任何编码
+    missing_codes = [cid for cid in code_ids if cid not in all_codes]
+    member_codes = (
+        sorted(all_codes) if codes is None else [cid for cid in code_ids if cid in all_codes]
+    )
+
+    codings_by_doc: dict[int, list[dict]] = {}
+    for r in coding_rows:
+        codings_by_doc.setdefault(r["document_id"], []).append(dict(r))
+
+    rows = compute_distribution(member_docs, codings_by_doc, member_codes)
+    empty_document_ids = [d["document_id"] for d in rows if d["empty"]]
+    # 文档正文不随接口返回：定位片段由前端切换文档后重新拉取
+    for d in rows:
+        d.pop("empty")
+
+    return {
+        "codes": [all_codes[cid] for cid in member_codes],
+        "documents": rows,
+        # code_ids / doc_ids 已去重排序，缺失列表保持同一稳定次序
+        "missing_codes": [{"id": cid} for cid in missing_codes],
+        "missing_documents": [{"id": did} for did in missing_documents],
+        "empty_document_ids": empty_document_ids,
     }
