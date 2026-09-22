@@ -49,6 +49,13 @@ docker compose up --build
   - 点击说话人名查看其发言段落，点击覆盖统计单元格查看覆盖片段与原文摘录，点击片段自动切回正文、滚动并闪烁定位高亮；
   - 编码筛选变化后统计列同步更新；未识别到发言段落或未选择编码时给出明确空状态。
   - 对应 `GET /api/documents/{id}/speakers?codes=1,2`（`codes` 为逗号分隔，缺省统计全部编码）。
+- **跨文档分布对比视图**：正文区顶部切换到「分布对比」标签，对**全部文档**按所选编码汇总**标注字符数、标注段数与占文档长度比例**——
+  - 表格行为编码、列为文档（按文档标题稳定排序），同一编码在各文档并列对比；单元格按行内最高占比**深浅着色**，并显示相对行内最高值的**差异百分比**；
+  - 计算口径：同一编码在每篇文档内先合并重叠/相邻区间再统计，共享字符不重复计数；占比 = 标注字符数 ÷ 文档长度；
+  - 顶部**文档筛选**复选框控制列显示，编码筛选与其它视图联动；
+  - 点击非零单元格自动**切换到该文档正文**、滚动并闪烁定位**首个对应片段**；
+  - 后端在**单一快照**中计算并返回**缺失编码**（全部文档均无标注）与**空文档**（没有所选编码标注）提示，不修改任何原标注。
+  - 对应 `GET /api/code-distribution?codes=1,2`（`codes` 为逗号分隔，缺省统计全部编码）。
 - **JSON 导出**：顶栏「导出 JSON」下载当前文档的完整编码结果（含每条标注的区间与原文切片），对应 `GET /api/documents/{id}/export`。
 - **持久化**：所有文档、编码本、标注均存于 SQLite，刷新页面后原样恢复；首次启动自动载入一份示例访谈与编码。
 
@@ -76,6 +83,7 @@ npm run dev   # http://localhost:5173
 | GET | `/api/documents/{id}/search?query=…` | 字面关键词检索：返回全部命中的半开区间与前后文（含彼此重叠的命中） |
 | GET | `/api/documents/{id}/cooccurrence` | 编码两两共现统计，可带 `?codes=1&codes=2` 按编码筛选；返回每对编码合并后的共现字符数、片段数与原文摘录 |
 | GET | `/api/documents/{id}/speakers` | 说话人分析：解析「说话人：」发言段落，返回每位说话人（含未标注说话人）的文本长度、各编码覆盖字符数与覆盖率及片段摘录；`?codes=1,2` 按编码筛选（逗号分隔，缺省为全部编码） |
+| GET | `/api/code-distribution` | 跨文档编码分布对比：全部文档按所选编码汇总标注字符数、段数与占文档长度比例（文档按标题稳定排序，含行内差异百分比与首个片段），单一快照返回缺失编码与空文档提示；`?codes=1,2` 按编码筛选（逗号分隔，缺省为全部编码） |
 | GET | `/api/documents/{id}/export` | 导出 JSON（附件下载） |
 | GET / POST | `/api/codes` | 编码本列表 / 新建（重名返回 409） |
 | PUT / DELETE | `/api/codes/{id}` | 重命名、改色 / 删除（级联删除标注） |
@@ -96,11 +104,12 @@ npm run dev   # http://localhost:5173
 │       ├── conflicts.py      # 冲突检测 / 合并 / 拆分纯函数
 │       ├── cooccurrence.py   # 区间归一化 / 交集 / 共现统计纯函数
 │       ├── speakers.py       # 说话人发言段落解析与覆盖统计纯函数
+│       ├── distribution.py   # 跨文档编码分布对比统计纯函数
 │       └── db.py             # SQLite 连接、建表、示例数据
 └── frontend/
     ├── Dockerfile          # 多阶段构建：Vite build → nginx
     ├── nginx.conf          # 静态托管 + /api 反向代理
     └── src/
         ├── App.jsx         # 状态编排与冲突决策流
-        └── components/     # TextView / CodingForm / SearchBatchPanel / ConflictDialog / Sidebar / CooccurrenceView / SpeakerView
+        └── components/     # TextView / CodingForm / SearchBatchPanel / ConflictDialog / Sidebar / CooccurrenceView / SpeakerView / DistributionView
 ```

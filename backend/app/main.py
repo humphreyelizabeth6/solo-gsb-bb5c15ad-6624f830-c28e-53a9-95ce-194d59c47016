@@ -20,6 +20,7 @@ from .conflicts import (
 )
 from .cooccurrence import build_code_intervals, intersect_intervals
 from .db import get_db, init_db, list_codings, next_color
+from .distribution import compute_distribution
 from .speakers import compute_speaker_stats
 
 Resolution = Literal["keep", "merge", "split"]
@@ -601,4 +602,89 @@ def speaker_analysis(
         "document_length": len(content),
         "codes": [all_codes[cid] for cid in member_ids],
         "speakers": compute_speaker_stats(content, codings, member_ids),
+    }
+
+
+# ---------- 跨文档编码分布对比 ----------
+
+ALL_CODINGS_SQL = """
+    SELECT cg.id, cg.document_id, cg.code_id, cg.start, cg."end",
+           cg.created_at, cg.updated_at, c.name AS code_name, c.color AS code_color
+    FROM codings cg JOIN codes c ON c.id = cg.code_id
+    ORDER BY cg.start, cg."end", cg.id
+"""
+
+
+@app.get("/api/code-distribution")
+def code_distribution(codes: str | None = Query(default=None)) -> dict:
+    """跨文档编码分布对比（单一快照计算，不修改任何标注）。
+
+    对全部文档按所选编码汇总标注字符数、标注段数与占文档长度比例，文档按
+    标题稳定排序（标题相同按 id）；同一编码在每篇文档内先合并重叠/相邻区间
+    再统计，共享字符不重复计数。每行（编码）附带相对行内最高占比的差异
+    百分比与首个合并区间（供前端定位）。同时返回：
+      - missing_codes：在全部文档中都没有标注的所选编码；
+      - empty_documents：没有任何所选编码标注的文档。
+
+    查询参数 codes 为逗号分隔的编码 id（?codes=1,2）：缺省统计编码本全部
+    编码；空串（?codes=）表示不统计任何编码。
+    """
+    with get_db() as conn:
+        all_codes = {
+            r["id"]: {"id": r["id"], "name": r["name"], "color": r["color"]}
+            for r in conn.execute("SELECT id, name, color FROM codes ORDER BY id")
+        }
+        if codes is None:
+            member_ids = sorted(all_codes)
+        else:
+            try:
+                member_ids = sorted(
+                    {int(x) for x in codes.split(",") if x.strip()}
+                )
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail="codes 参数格式错误：应为逗号分隔的编码 id",
+                )
+            unknown = [cid for cid in member_ids if cid not in all_codes]
+            if unknown:
+                raise HTTPException(
+                    status_code=404, detail=f"编码不存在: {unknown}"
+                )
+        documents = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, title, content FROM documents ORDER BY title, id"
+            ).fetchall()
+        ]
+        codings_by_doc: dict[int, list[dict]] = {}
+        for row in conn.execute(ALL_CODINGS_SQL).fetchall():
+            codings_by_doc.setdefault(row["document_id"], []).append(dict(row))
+
+    rows = compute_distribution(documents, codings_by_doc, member_ids)
+    missing_codes = [
+        all_codes[cid]
+        for cid, row in zip(member_ids, rows)
+        if all(cell["char_count"] == 0 for cell in row["cells"])
+    ]
+    coded_doc_ids = {
+        cell["document_id"]
+        for row in rows
+        for cell in row["cells"]
+        if cell["char_count"] > 0
+    }
+    empty_documents = [
+        {"id": d["id"], "title": d["title"]}
+        for d in documents
+        if d["id"] not in coded_doc_ids
+    ]
+    return {
+        "codes": [all_codes[cid] for cid in member_ids],
+        "documents": [
+            {"id": d["id"], "title": d["title"], "length": len(d["content"])}
+            for d in documents
+        ],
+        "rows": rows,
+        "missing_codes": missing_codes,
+        "empty_documents": empty_documents,
     }

@@ -34,6 +34,11 @@ export const api = {
     if (codeIds === null) return request(`/documents/${id}/speakers`)
     return request(`/documents/${id}/speakers?codes=${codeIds.join(',')}`)
   },
+  // 跨文档编码分布对比；codeIds：null=全部编码；[]=不统计任何编码
+  getCodeDistribution: (codeIds = null) => {
+    if (codeIds === null) return request('/code-distribution')
+    return request(`/code-distribution?codes=${codeIds.join(',')}`)
+  },
 
   listCodes: () => request('/codes'),
   createCode: (name, color) =>

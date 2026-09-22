@@ -6,6 +6,7 @@ import ConflictDialog from './components/ConflictDialog'
 import Sidebar from './components/Sidebar'
 import CooccurrenceView from './components/CooccurrenceView'
 import SpeakerView from './components/SpeakerView'
+import DistributionView from './components/DistributionView'
 import SearchBatchPanel from './components/SearchBatchPanel'
 
 export default function App() {
@@ -21,13 +22,16 @@ export default function App() {
   const [error, setError] = useState(null)
   const [showNewDoc, setShowNewDoc] = useState(false)
   const [newDoc, setNewDoc] = useState({ title: '', content: '' })
-  const [view, setView] = useState('text') // text | cooccurrence | speakers
+  const [view, setView] = useState('text') // text | cooccurrence | speakers | distribution
   const [coocStats, setCoocStats] = useState(null)
   const [coocLoading, setCoocLoading] = useState(false)
   const [coocError, setCoocError] = useState(null)
   const [speakerStats, setSpeakerStats] = useState(null)
   const [speakerLoading, setSpeakerLoading] = useState(false)
   const [speakerError, setSpeakerError] = useState(null)
+  const [distStats, setDistStats] = useState(null)
+  const [distLoading, setDistLoading] = useState(false)
+  const [distError, setDistError] = useState(null)
   const [pendingLocate, setPendingLocate] = useState(null)
 
   const showError = useCallback((e) => {
@@ -71,7 +75,8 @@ export default function App() {
     if (docId != null) {
       setEditing(null)
       setSelection(null)
-      setPendingLocate(null)
+      // 跨文档定位的待定位片段指向新文档本身，需保留；其余情况清除
+      setPendingLocate((cur) => (cur && cur.docId === docId ? cur : null))
       loadDocument(docId)
     }
   }, [docId, loadDocument])
@@ -134,6 +139,27 @@ export default function App() {
   useEffect(() => {
     loadSpeakers()
   }, [loadSpeakers])
+
+  // ---------- 跨文档编码分布对比（随编码筛选与标注变化同步） ----------
+
+  const loadDistribution = useCallback(async () => {
+    // 与说话人分析一致：编码全部取消勾选时传空数组，后端仅返回文档列表
+    setDistLoading(true)
+    setDistError(null)
+    try {
+      setDistStats(await api.getCodeDistribution(filteredCodeIds))
+    } catch (e) {
+      setDistStats(null)
+      setDistError(e.message || String(e))
+    } finally {
+      setDistLoading(false)
+    }
+    // docData 变化（新建/编辑/删除标注后 refresh）也要重新统计
+  }, [filteredCodeIds, docData])
+
+  useEffect(() => {
+    loadDistribution()
+  }, [loadDistribution])
 
   // ---------- 编码创建 / 编辑（含冲突检测） ----------
 
@@ -250,12 +276,21 @@ export default function App() {
   // 共现矩阵 / 说话人分析片段 → 切回正文并定位高亮
   function handleLocateSegment(seg) {
     setView('text')
-    setPendingLocate({ start: seg.start, end: seg.end })
+    setPendingLocate({ docId, start: seg.start, end: seg.end })
+  }
+
+  // 分布对比单元格 → 切到目标文档正文并定位首个对应片段
+  function handleLocateCell(documentId, seg) {
+    setDocId(documentId)
+    setView('text')
+    setPendingLocate({ docId: documentId, start: seg.start, end: seg.end })
   }
 
   // 正文渲染完成后处理来自统计视图的待定位片段
   useEffect(() => {
     if (view !== 'text' || !pendingLocate) return
+    // 跨文档定位需等目标文档加载完成，避免滚动到旧文档的同名区间
+    if (!docData || docData.document.id !== pendingLocate.docId) return
     const range = pendingLocate
     setFlashRange(range)
     // 等视图切换后的 DOM 渲染完成再滚动
@@ -268,7 +303,7 @@ export default function App() {
       clearTimeout(t)
       clearTimeout(clear)
     }
-  }, [view, pendingLocate])
+  }, [view, pendingLocate, docData])
 
   function toggleFilter(id) {
     setFilters((cur) => {
@@ -395,6 +430,14 @@ export default function App() {
             >
               说话人分析
             </button>
+            <button
+              role="tab"
+              aria-selected={view === 'distribution'}
+              className={view === 'distribution' ? 'active' : ''}
+              onClick={() => setView('distribution')}
+            >
+              分布对比
+            </button>
           </div>
           {view === 'text' ? (
             <TextView
@@ -414,12 +457,19 @@ export default function App() {
               error={coocError}
               onLocateSegment={handleLocateSegment}
             />
-          ) : (
+          ) : view === 'speakers' ? (
             <SpeakerView
               stats={speakerStats}
               loading={speakerLoading}
               error={speakerError}
               onLocateSegment={handleLocateSegment}
+            />
+          ) : (
+            <DistributionView
+              stats={distStats}
+              loading={distLoading}
+              error={distError}
+              onLocateCell={handleLocateCell}
             />
           )}
         </section>
